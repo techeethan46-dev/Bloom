@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 import health
 from cogs.applications import Applications
+from cogs.message import Message
 from cogs.setup import Setup
 from cogs.welcome import Welcome
 from config import GUILD_ID
@@ -35,6 +36,7 @@ class BloomBot(commands.Bot):
         await self.database.ping()
         await self.add_cog(Setup(self))
         await self.add_cog(Welcome(self))
+        await self.add_cog(Message(self))
         await self.add_cog(Applications(self))
 
         # Start the web page first, so Render sees the open port straight away.

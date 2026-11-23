@@ -20,6 +20,10 @@ class Database:
     def applications(self):
         return self.db["staff_applications"]
 
+    @property
+    def composed(self):
+        return self.db["composed_messages"]
+
     async def get_guild_settings(self, guild_id: int) -> dict:
         return await self.guilds.find_one({"_id": guild_id}) or {}
 

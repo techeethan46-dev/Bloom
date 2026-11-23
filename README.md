@@ -8,6 +8,8 @@ A modular Discord bot for Bloom, built with Python, `discord.py` 2.x, MongoDB, a
 - Welcome card for every new member
 - Staff applications: a panel with an **Apply** button, a form, a private review channel with **Approve** and
   **Reject** buttons, and permanent buttons that keep working after a restart
+- **`/message create`**: write rich messages (rules, announcements) from cards and banners, preview them, and post
+  them in any channel. **`/message edit`** changes them later.
 - A small web page (`/health`) so Render stays happy and UptimeRobot can keep the bot awake
 
 ## Requirements
@@ -49,6 +51,19 @@ it saves and moves to the next step:
 
 On the last page you can **Preview welcome** and **Post application panel** (it posts in the channel where you ran `/setup`).
 Run `/setup` again any time to change something.
+
+## Writing messages with /message
+Run **`/message create`** (Manage Server needed) and pick a channel, or leave it empty for the current one. Only you see
+the builder:
+
+- **Add card**: type the text (`## Heading`, `**bold**`, `- lists`), and optionally a color, a small picture, a big
+  picture and link buttons. Typing `#rules` or `@VIP` turns into a real channel or role link.
+- **Add banner**: a wide picture on its own (needs an `https://` link to the picture).
+- Pick a block in the list to **Edit**, move it **Up** or **Down**, or **Delete** it. **Preview** shows it privately.
+- **Post message** sends it. Mentions show but never ping anyone.
+- **`/message edit`** lists the messages you made with it (or paste a message link), and **Save changes** updates the live message.
+
+One message holds up to 3,800 characters and 8 blocks, so post several messages for long rules.
 
 ## Render deployment (with UptimeRobot)
 1. Render: **New** > **Web Service**, connect this GitHub repo.
