@@ -1,28 +1,33 @@
+from __future__ import annotations
+
 import discord
-from discord import app_commands
+from bson import ObjectId
+from discord import ui
 from discord.ext import commands
+from pymongo import ReturnDocument
 
-from config import APPLICATION_REVIEW_KEYS, ROLE_LABELS
-from utils import bloom_embed, has_any_bloom_role
+from config import APPLICATION_REVIEW_KEYS, GREEN, PINK, ROSE
+from utils import card, card_view, divider, has_any_bloom_role, notice, text
 
-class StaffApplicationModal(discord.ui.Modal, title="Bloom Staff Application"):
-    position = discord.ui.TextInput(
+
+class StaffApplicationModal(ui.Modal, title="Bloom Staff Application"):
+    position = ui.TextInput(
         label="Staff position",
         placeholder="Which role are you applying for?",
         max_length=80,
     )
-    availability = discord.ui.TextInput(
+    availability = ui.TextInput(
         label="Availability",
         placeholder="When are you usually active?",
         max_length=150,
     )
-    experience = discord.ui.TextInput(
+    experience = ui.TextInput(
         label="Experience",
         placeholder="Tell us about any relevant experience",
         style=discord.TextStyle.paragraph,
         max_length=700,
     )
-    why = discord.ui.TextInput(
+    why = ui.TextInput(
         label="Why do you want to join the staff team?",
         style=discord.TextStyle.paragraph,
         max_length=700,
@@ -38,7 +43,7 @@ class StaffApplicationModal(discord.ui.Modal, title="Bloom Staff Application"):
         review_channel = interaction.guild.get_channel(int(review_channel_id)) if review_channel_id else None
         if not isinstance(review_channel, discord.TextChannel):
             return await interaction.response.send_message(
-                "Applications are not configured yet. Please contact a server administrator.",
+                view=notice("warn", "Applications aren't set up yet. Please tell a server administrator.", "Not ready yet"),
                 ephemeral=True,
             )
 
@@ -55,112 +60,128 @@ class StaffApplicationModal(discord.ui.Modal, title="Bloom Staff Application"):
             "review_message_id": None,
         }
         result = await self.bot.database.applications.insert_one(document)
-        application_id = str(result.inserted_id)
+        document["_id"] = result.inserted_id
 
-        embed = bloom_embed("New staff application 🌷", f"Applicant: {interaction.user.mention}\nApplication ID: `{application_id}`")
-        embed.add_field(name="Position", value=str(self.position), inline=True)
-        embed.add_field(name="Availability", value=str(self.availability), inline=True)
-        embed.add_field(name="Experience", value=str(self.experience), inline=False)
-        embed.add_field(name="Why Bloom?", value=str(self.why), inline=False)
-        embed.set_footer(text=f"Applicant ID: {interaction.user.id} • Pending review")
-
-        view = ApplicationReviewView(self.bot, application_id)
-        message = await review_channel.send(embed=embed, view=view)
+        try:
+            message = await review_channel.send(
+                view=ApplicationReviewView(self.bot, document),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            await self.bot.database.applications.delete_one({"_id": result.inserted_id})
+            return await interaction.response.send_message(
+                view=notice("bad", "I couldn't send your application to the review channel. Please tell a server administrator.", "Something went wrong"),
+                ephemeral=True,
+            )
         await self.bot.database.applications.update_one(
             {"_id": result.inserted_id},
             {"$set": {"review_message_id": message.id, "review_channel_id": review_channel.id}},
         )
         await interaction.response.send_message(
-            embed=bloom_embed(
-                "Application submitted 🌸",
-                "Your application has been sent to the Bloom leadership team for review. Please avoid sharing private personal information in applications.",
+            view=notice(
+                "ok",
+                "Your application was sent to the Bloom leadership team for review. Please avoid sharing private personal information.",
+                "Application submitted",
             ),
             ephemeral=True,
         )
 
-class ApplicationPanelView(discord.ui.View):
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        raise error
+
+
+class ApplicationPanelView(ui.LayoutView):
+    """The permanent "Apply" panel people press."""
+
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=None)
         self.bot = bot
+        apply_button = ui.Button(label="Apply for staff", emoji="🌸", style=discord.ButtonStyle.primary, custom_id="bloom:apply")
+        apply_button.callback = self._apply
+        self.add_item(card(
+            text(
+                "## 🌸 Join the Bloom staff team",
+                "Want to help Bloom grow? Press the button below and tell us about yourself. The leadership team reads every application privately.",
+            ),
+            ui.ActionRow(apply_button),
+            text("-# Takes about two minutes"),
+        ))
 
-    @discord.ui.button(label="Apply for staff", style=discord.ButtonStyle.primary, emoji="🌸", custom_id="bloom:apply")
-    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _apply(self, interaction: discord.Interaction):
         await interaction.response.send_modal(StaffApplicationModal(self.bot))
 
-class ApplicationReviewView(discord.ui.View):
-    def __init__(self, bot: commands.Bot, application_id: str):
+
+def _application_card(doc: dict, application_id: str, buttons: list[ui.Button] | None = None) -> ui.Container:
+    status = doc.get("status", "pending")
+    color = {"pending": PINK, "approved": GREEN, "rejected": ROSE}[status]
+    children: list[ui.Item] = [
+        text("## 🌷 New staff application", f"**Applicant** · <@{doc['user_id']}>",
+             f"-# Application `{application_id}`"),
+        divider(),
+        text(f"**Position** · {doc['position']}", f"**Availability** · {doc['availability']}"),
+        text("**Experience**", doc["experience"]),
+        text("**Why Bloom?**", doc["why"]),
+    ]
+    if status == "pending":
+        children += [divider(), ui.ActionRow(*(buttons or []))]
+        children.append(text(f"-# Applicant ID {doc['user_id']} · waiting for review"))
+    else:
+        verb = "Approved" if status == "approved" else "Rejected"
+        icon = "🌷" if status == "approved" else "✖️"
+        children += [divider(), text(f"{icon} **{verb}** by <@{doc.get('reviewed_by')}>",
+                                    f"-# Applicant ID {doc['user_id']}")]
+    return card(*children, color=color)
+
+
+class ApplicationReviewView(ui.LayoutView):
+    """The card in the review channel. Pending ones have Approve and Reject buttons and survive restarts."""
+
+    def __init__(self, bot: commands.Bot, doc: dict):
         super().__init__(timeout=None)
         self.bot = bot
-        self.application_id = application_id
-        self.approve.custom_id = f"bloom:approve:{application_id}"
-        self.reject.custom_id = f"bloom:reject:{application_id}"
+        self.doc = doc
+        self.application_id = str(doc["_id"])
+        buttons: list[ui.Button] = []
+        if doc.get("status", "pending") == "pending":
+            approve = ui.Button(label="Approve", emoji="🌷", style=discord.ButtonStyle.success, custom_id=f"bloom:approve:{self.application_id}")
+            reject = ui.Button(label="Reject", emoji="✖️", style=discord.ButtonStyle.danger, custom_id=f"bloom:reject:{self.application_id}")
+            approve.callback = lambda i: self._decide(i, "approved")
+            reject.callback = lambda i: self._decide(i, "rejected")
+            buttons = [approve, reject]
+        self.add_item(_application_card(doc, self.application_id, buttons))
 
-    async def authorized(self, interaction: discord.Interaction) -> bool:
+    async def _authorized(self, interaction: discord.Interaction) -> bool:
         settings = await self.bot.database.get_guild_settings(interaction.guild_id)
-        allowed = await has_any_bloom_role(interaction.user, settings, APPLICATION_REVIEW_KEYS)
-        if not allowed and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("Only Bloom leadership can review applications.", ephemeral=True)
-            return False
-        return True
+        if has_any_bloom_role(interaction.user, settings, APPLICATION_REVIEW_KEYS) or interaction.user.guild_permissions.administrator:
+            return True
+        await interaction.response.send_message(view=notice("bad", "Only Bloom leadership can review applications.", "Leadership only"), ephemeral=True)
+        return False
 
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="🌷")
-    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.authorized(interaction):
+    async def _decide(self, interaction: discord.Interaction, status: str):
+        if not await self._authorized(interaction):
             return
-        await self.finish(interaction, "approved")
-
-    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, emoji="✖")
-    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.authorized(interaction):
-            return
-        await self.finish(interaction, "rejected")
-
-    async def finish(self, interaction: discord.Interaction, status: str):
-        from bson import ObjectId
-        application = await self.bot.database.applications.find_one({"_id": ObjectId(self.application_id)})
-        if not application or application.get("status") != "pending":
-            return await interaction.response.send_message("This application has already been processed or no longer exists.", ephemeral=True)
-
-        await self.bot.database.applications.update_one(
-            {"_id": ObjectId(self.application_id)},
-            {"$set": {
-                "status": status,
-                "reviewed_by": interaction.user.id,
-                "reviewed_at": discord.utils.utcnow(),
-            }},
+        # One atomic step, so two quick clicks can't both decide it.
+        doc = await self.bot.database.applications.find_one_and_update(
+            {"_id": ObjectId(self.application_id), "status": "pending"},
+            {"$set": {"status": status, "reviewed_by": interaction.user.id, "reviewed_at": discord.utils.utcnow()}},
+            return_document=ReturnDocument.AFTER,
         )
-        for child in self.children:
-            if isinstance(child, discord.ui.Button):
-                child.disabled = True
-
-        embed = interaction.message.embeds[0]
-        embed.color = discord.Color.green() if status == "approved" else discord.Color.red()
-        embed.add_field(name="Decision", value=f"{status.title()} by {interaction.user.mention}", inline=False)
-        await interaction.response.edit_message(embed=embed, view=self)
+        if not doc:
+            return await interaction.response.send_message(
+                view=notice("warn", "This application was already decided, or it no longer exists.", "Already handled"), ephemeral=True)
+        await interaction.response.edit_message(view=ApplicationReviewView(self.bot, doc))
 
 
 class Applications(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    def register_persistent_views(self):
+    async def register_persistent_views(self):
+        """After a restart, make the panel and every pending application's buttons work again."""
         self.bot.add_view(ApplicationPanelView(self.bot))
-        # Reconstruct review views for all pending applications.
-        async def register_pending():
-            cursor = self.bot.database.applications.find({"status": "pending"})
-            async for item in cursor:
-                self.bot.add_view(ApplicationReviewView(self.bot, str(item["_id"])))
-        self.bot.loop.create_task(register_pending())
+        async for doc in self.bot.database.applications.find({"status": "pending"}):
+            self.bot.add_view(ApplicationReviewView(self.bot, doc))
 
-    @app_commands.command(name="bloom_application_panel", description="Post the staff application panel in this channel.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def bloom_application_panel(self, interaction: discord.Interaction):
-        embed = bloom_embed(
-            "Join the Bloom staff team 🌸",
-            "Interested in helping Bloom grow? Press the button below to submit a staff application. The leadership team will review it privately.",
-        )
-        await interaction.channel.send(embed=embed, view=ApplicationPanelView(self.bot))
-        await interaction.response.send_message("Staff application panel posted.", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(Applications(bot))

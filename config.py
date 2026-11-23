@@ -1,8 +1,11 @@
 import os
 
-PINK = 0xE8A7C8
+# Bloom's colors: pink and black.
+PINK = 0xE8A7C8       # the main accent on every card
 DARK = 0x241B29
-SOFT_PINK = 0xF6DCEB
+SOFT_PINK = 0xF6DCEB  # gentle notes and warnings
+ROSE = 0xC9507D       # errors and "no"
+GREEN = 0x7BC8A4      # approved
 
 DATABASE_NAME = os.getenv("MONGODB_DATABASE", "bloom_bot")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
