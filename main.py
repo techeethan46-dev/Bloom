@@ -61,6 +61,32 @@ class BloomBot(commands.Bot):
     async def close(self):
         await self.database.close()
         await super().close()
+        
+from aiohttp import web
+import asyncio
 
+async def health(request):
+    return web.json_response({
+        "status": "online",
+        "bot": str(bot.user) if bot.user else "starting"
+    })
+
+async def start_health_server():
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    site = web.TCPSite(
+        runner,
+        "0.0.0.0",
+        int(os.getenv("PORT", 10000))
+    )
+    await site.start()
+
+    return runner
+    
 bot = BloomBot()
 bot.run(TOKEN, log_handler=None)
